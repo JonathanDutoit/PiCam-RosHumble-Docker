@@ -41,18 +41,11 @@ RUN git reset --hard 6cf6e88715ac034f568603bce9a1b8f4a30c12ce \
 
 # 4. Python dependencies
 RUN apt update && apt install -y \
-      python3-piexif python3-prctl python3-numpy python3-opencv \
-      ros-humble-rmw-cyclonedds-cpp \ 
-      ros-humble-vision-msgs \
-      ros-humble-cv-bridge \
+      python3-piexif python3-prctl python3-numpy \
     && pip3 install --upgrade pip \
     && pip3 install \
         "numpy<2" \
-        pyprctl \
-        flask \
-        onnxruntime \
-        picamera2==0.3.21 \
-        python-statemachine
+        picamera2==0.3.21
 
 # 5. Environment setup & Manual Link Fix
 # We use hardcoded 3.10 paths since ROS Humble is Ubuntu 22.04 (Python 3.10)
@@ -75,7 +68,7 @@ RUN echo "--- DIAGNOSTICS ---" && \
     python3 -c "from picamera2 import Picamera2; print('✓ picamera2 imported')"
 
 
-COPY docker/camera/entrypoint.sh /app/entrypoint.sh
+COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
 ENTRYPOINT ["/app/entrypoint.sh"]
