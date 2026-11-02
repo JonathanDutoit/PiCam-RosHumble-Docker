@@ -1,0 +1,13 @@
+services:
+  camera:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: pi5-camera-ros-humble:latest
+    platform: linux/arm64
+    network_mode: host
+    privileged: true
+    stdin_open: true
+    tty: true
+    volumes:
+      - /run/udev:/run/udev:ro
