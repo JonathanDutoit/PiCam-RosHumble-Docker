@@ -67,6 +67,8 @@ RUN echo "--- DIAGNOSTICS ---" && \
     python3 -c "import pykms; print('✓ pykms imported')" && \
     python3 -c "from picamera2 import Picamera2; print('✓ picamera2 imported')"
 
+ENV ROS_WS=/app/ros2_ws
+RUN mkdir -p ${ROS_WS}/src
 
 COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh

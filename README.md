@@ -31,6 +31,7 @@ environment, and verifies every import at build time so a broken image never shi
 | libcamera | `v0.3.1+rpt20240906` ([raspberrypi/libcamera](https://github.com/raspberrypi/libcamera)) | Built with `rpi/vc4` + `rpi/pisp` pipelines and IPAs, V4L2 adapter, GStreamer, Python bindings (`pycamera`) |
 | kmsxx | commit `6cf6e88` ([tomba/kmsxx](https://github.com/tomba/kmsxx)) | Built with `pykms` |
 | picamera2 | `0.3.21` | With `numpy<2` for compatibility |
+| Entrypoint | `entrypoint.sh` | Sources ROS 2 Humble and builds a colcon workspace at startup (see [Adding your own ROS 2 code](#adding-your-own-ros-2-code)) |
 
 ## Requirements
 
@@ -38,13 +39,21 @@ environment, and verifies every import at build time so a broken image never shi
 - Docker on the Pi itself, or `docker buildx` with an ARM64 builder elsewhere
   (building under QEMU emulation on x86 works but is very slow, `libcamera` compilation dominates)
 - Camera module connected and enabled
+- (Optional) your ROS 2 packages under `./ros2_ws/src`, see
+  [Adding your own ROS 2 code](#adding-your-own-ros-2-code)
 
 ## Getting started
+
+### Pull the prebuilt image
+
+```bash
+docker pull jonathandutoit/picam-roshumble:latest
+```
 
 ### Build
 
 ```bash
-docker build -f Dockerfile -t <your-image-name> .
+docker build -f Dockerfile -t picam-roshumble:latest .
 ```
 
 Expect a long first build (compiling `libcamera` and `kmsxx` from source). The build ends with a
@@ -57,19 +66,58 @@ The container needs direct access to the camera-related devices:
 
 ```bash
 docker run -it --rm \
-  --name pi5-cam \
+  --name picam-roshumble \
   --network host \
   -v /run/udev:/run/udev:ro \
   --device /dev/dri \
   --device /dev/dma_heap \
   $(for d in /dev/video* /dev/media*; do echo --device $d; done) \
-  <your-image-name>
+  picam-roshumble:latest
 ```
 
 - `--network host` helps with ROS 2 DDS discovery between containers and the host.
 - Mounting `/run/udev` lets libcamera enumerate the media controllers.
 - For a quick sanity check you can substitute all the `--device` flags with `--privileged`
   (fine for testing, not for production).
+
+### Run with Docker Compose
+
+`docker-compose.yml` in this repository wraps the same configuration:
+
+```yaml
+services:
+  camera:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: picam-roshumble:latest
+    platform: linux/arm64
+    network_mode: host
+    privileged: true
+    stdin_open: true
+    tty: true
+    volumes:
+      - ./ros2_ws:/app/ros2_ws
+      - /run/udev:/run/udev:ro
+```
+
+Then:
+
+```bash
+docker compose up -d --build
+docker compose exec camera bash
+```
+
+Notes:
+
+- `privileged: true` is the pragmatic choice here: camera devices (`/dev/video*`, `/dev/media*`,
+  `/dev/dma_heap`) are dynamically numbered, so listing them one by one is brittle. To harden,
+  replace it with explicit `devices:` entries plus `group_add: [video, render]` and keep the
+  `/run/udev` mount.
+- The `./ros2_ws` bind mount is what the entrypoint builds at startup. Drop that line if you only
+  want the camera runtime.
+- With both `build:` and `image:` set, `docker compose up` builds the image locally when it is
+  missing and pulls it otherwise.
 
 ### Verify the camera
 
@@ -80,6 +128,29 @@ python3 -c "from picamera2 import Picamera2; print(Picamera2.global_camera_info(
 You should see your camera listed. If the container starts but no camera is found, see
 [Troubleshooting](#troubleshooting).
 
+## Adding your own ROS 2 code
+
+The image ships no application code; it is a runtime for your workspace.
+
+- Put your packages in `./ros2_ws/src` next to this README, or mount any host folder to
+  `/app/ros2_ws`.
+- On every container start, the entrypoint sources ROS 2 Humble, runs
+  `colcon build --symlink-install` in the workspace, sources `install/setup.bash`, then hands over
+  to the shell.
+- The workspace location is controlled by the `ROS_WS` environment variable (default
+  `/app/ros2_ws`).
+
+## Repository layout
+
+```
+.
+├── Dockerfile
+├── docker-compose.yml
+├── entrypoint.sh
+├── LICENSE
+└── README.md
+```
+
 ## How it works
 
 1. **Build tools**: installs `meson`, `ninja` and all native dependencies needed by `libcamera`
@@ -88,7 +159,8 @@ You should see your camera listed. If the container starts but no camera is foun
    `rpi/pisp` (Pi 5) and `rpi/vc4` (older Pis), plus the Python bindings (`pycamera`), V4L2
    adapter and GStreamer support.
 3. **kmsxx**: pinned to a known-good commit and built with `pykms`.
-4. **Python + ROS dependencies**: `picamera2`, `flask`.
+4. **Python dependencies**: `picamera2` (with `numpy<2`; its remaining dependencies come from apt
+   or pip).
 5. **The Python path fix**: meson installs the bindings into
    `/usr/local/lib/aarch64-linux-gnu/python3.10/site-packages`, which is *not* on Ubuntu's default
    `sys.path`. The image symlinks the `libcamera` package and the `pykms` shared objects into
@@ -97,7 +169,8 @@ You should see your camera listed. If the container starts but no camera is foun
 6. **Build-time verification**: `import libcamera`, `import pykms` and
    `from picamera2 import Picamera2` are all executed during the build, with diagnostics printed
    on failure.
-
+7. **Startup**: the entrypoint sources ROS 2 Humble and builds the colcon workspace at `$ROS_WS`
+   before opening a shell.
 
 ## Troubleshooting
 
@@ -106,6 +179,7 @@ You should see your camera listed. If the container starts but no camera is foun
 | `ImportError: libcamera.so not found` | `LD_LIBRARY_PATH` is wrong; the image sets it, so this usually means a custom override is in the way |
 | `ModuleNotFoundError: No module named 'libcamera'` | The symlinks in `/usr/local/lib/python3.10/dist-packages` are missing; rebuild without cache |
 | Container starts, but `Picamera2` finds no camera | Missing device flags (need `/dev/media*`, `/dev/video*`, `/dev/dma_heap`), or `/run/udev` not mounted; also test on the host with `rpicam-hello` |
+| Container exits immediately after start | `ROS_WS` is unset or `colcon build` failed; check `docker compose logs camera` |
 | ROS 2 nodes don't discover each other | Try `--network host` |
 | Build fails in the libcamera compile step | Check you are building for aarch64; the RPi fork and its options target ARM boards |
 
@@ -116,4 +190,4 @@ OS versions, Docker versions).
 
 ## License
 
-<!-- Add your license here, e.g. MIT, Apache-2.0 -->
+This project is licensed under the [GNU General Public License v3.0](LICENSE).
